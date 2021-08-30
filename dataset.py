@@ -28,8 +28,21 @@ def is_image_file(filename):
 class BaseAugmentation:
     def __init__(self, mean, std, **args):
         self.transform = A.Compose([
+            A.CenterCrop(400, 300),
             A.Resize(224, 224),
             A.HorizontalFlip(), # Same with transforms.RandomHorizontalFilp()
+            A.Normalize(mean=mean, std=std),
+            ToTensorV2(),
+        ])
+
+    def __call__(self, image):
+        return self.transform(image=image)['image']
+
+
+class ValAugmentation:
+    def __init__(self, mean, std, **args):
+        self.transform = A.Compose([
+            A.Resize(224, 224),
             A.Normalize(mean=mean, std=std),
             ToTensorV2(),
         ])
@@ -180,7 +193,7 @@ class MaskBaseDataset(Dataset):
         self.transform = transform
 
     def __getitem__(self, index):
-        assert self.transform is not None, ".set_tranform 메소드를 이용하여 transform 을 주입해주세요"
+        # assert self.transform is not None, ".set_tranform 메소드를 이용하여 transform 을 주입해주세요"
 
         image = self.read_image(index)
         mask_label = self.get_mask_label(index)
@@ -188,8 +201,8 @@ class MaskBaseDataset(Dataset):
         age_label = self.get_age_label(index)
         multi_class_label = self.encode_multi_class(mask_label, gender_label, age_label)
 
-        image_transform = self.transform(image)
-        return image_transform, multi_class_label
+        # image_transform = self.transform(image)
+        return image, multi_class_label
 
     def __len__(self):
         return len(self.image_paths)
@@ -296,6 +309,21 @@ class MaskSplitByProfileDataset(MaskBaseDataset):
 
     def split_dataset(self) -> List[Subset]:
         return [Subset(self, indices) for phase, indices in self.indices.items()]
+
+class SubDataset(Dataset):
+    def __init__(self, subset, transform=None):
+        self.subset = subset
+        self.transform = transform
+
+    def __getitem__(self, idx):
+        image, label = self.subset[idx]
+        if self.transform:
+            image = self.transform(image)
+        return image, label
+
+    def __len__(self):
+        return len(self.subset)
+
 
 
 class TestDataset(Dataset):

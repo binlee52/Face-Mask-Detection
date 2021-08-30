@@ -22,11 +22,31 @@ from sam import SAM
 
 from torch.optim.lr_scheduler import StepLR
 
-from dataset import MaskBaseDataset
+from dataset import MaskBaseDataset, SubDataset
 from loss import create_criterion
 import model as module
 
 from parse_config import ConfigParser
+
+
+def rand_bbox(size, lam):  # size : [Batch_size, Channel, Width, Height]
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)  # 패치 크기 비율
+    cut_w = np.int(W * cut_rat)
+    cut_h = np.int(H * cut_rat)
+
+    # 패치의 중앙 좌표 값 cx, cy
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    # 패치 모서리 좌표 값
+    bbx1 = 0
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = W
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
 
 def seed_everything(seed):
     torch.manual_seed(seed)
@@ -116,10 +136,18 @@ def train(data_dir, model_dir, args):
         mean=dataset.mean,
         std=dataset.std,
     )
-    dataset.set_transform(transform)
+
+    val_transform_module = getattr(import_module("dataset"), args.val_augmentation)
+    val_transform = val_transform_module(
+        mean=dataset.mean,
+        std=dataset.std,
+    )
+    # dataset.set_transform(transform)
 
     # -- data_loader
     train_set, val_set = dataset.split_dataset()
+    train_set = SubDataset(train_set, transform=transform)
+    val_set = SubDataset(val_set, transform=val_transform)
 
     train_loader = DataLoader(
         train_set,
@@ -139,13 +167,22 @@ def train(data_dir, model_dir, args):
         # drop_last=True,
     )
 
+
     # -- model
     model_module = getattr(import_module("model"), args.model)  # default: BaseModel
     model = model_module(
         model_name=args.model_name,
         pretrained=args.pretrained,
         num_classes=num_classes
-    ).to(device)
+    )
+
+    # load saved model
+    option = args.option
+    if option["load"]:
+        model.load_state_dict(torch.load(option["path"]))
+        model.eval()
+
+    model = model.to(device)
     model = torch.nn.DataParallel(model)
 
     # -- loss & metric
@@ -171,7 +208,6 @@ def train(data_dir, model_dir, args):
         # train loop
         model.train()
 
-        matches = 0
         train_loss = 0
 
         for idx, train_batch in enumerate(train_loader):
@@ -180,17 +216,37 @@ def train(data_dir, model_dir, args):
             labels = labels.to(device)
 
             optimizer.zero_grad()
-            outs = model(inputs)
-            preds = torch.argmax(outs, dim=-1)
-            loss = criterion(outs, labels)
+
+            r = np.random.rand(1)
+            if args.beta > 0 and r < args.cutmix_prob: # cutmix가 실행된 경우
+                lam = np.random.beta(args.beta, args.beta)
+                rand_index = torch.randperm(inputs.size()[0]).to(device)
+                target_a = labels
+                target_b = labels[rand_index]
+                bbx1, bby1, bbx2, bby2 = rand_bbox(inputs.size(), lam)
+                inputs[:, :, bbx1:bbx2, bby1:bby2] = inputs[rand_index, :, bbx1:bbx2, bby1:bby2]
+                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (inputs.size()[-1] * inputs.size()[-2]))
+                outs = model(inputs)
+                # 패치 이미지와 원본 이미지의 비율에 맞게
+                loss = criterion(outs, target_a) * lam + criterion(outs, target_b) * (1. - lam)
+            else:
+                outs = model(inputs)
+                loss = criterion(outs, labels)
+
             loss.backward()
             optimizer.step()
-
             train_loss += loss.item()
-            matches += (preds == labels).sum().item()
+
+
+            # outs = model(inputs)
+            # preds = torch.argmax(outs, dim=-1)
+            # loss = criterion(outs, labels)
+            # loss.backward()
+            # optimizer.step()
+            #
+            # train_loss += loss.item()
 
         train_loss = train_loss / len(train_loader)
-        train_acc = matches / len(train_set) * 100
 
         scheduler.step()
 
@@ -247,11 +303,10 @@ def train(data_dir, model_dir, args):
             with open(os.path.join(save_dir, 'log.log'), 'a', encoding='utf-8') as f:
                 f.write(
                     f"Epoch {epoch}, F1_Score: {epoch_f1:.3f}, Val Loss: {val_loss:.5f}, "
-                    f"Val Acc: {val_acc:.5f}, Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}\n"
+                    f"Val Acc: {val_acc:.5f}, Train Loss: {train_loss:.5f}\n"
                 )
 
             logger.add_scalar("Train/loss", train_loss, epoch)
-            logger.add_scalar("Train/accuracy", train_acc, epoch)
             logger.add_scalar("Val/loss", val_loss, epoch)
             logger.add_scalar("Val/accuracy", val_acc, epoch)
             logger.add_scalar("Val/f1_score", epoch_f1, epoch)
@@ -274,7 +329,7 @@ def draw_confusion_matrix(target, pred, path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-
+    torch.cuda.empty_cache()
     import os
 
     # Data and model checkpoints directories
@@ -300,19 +355,27 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/data/train/images'))
     parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR', './runs'))
 
+    parser.add_argument('--beta', type=float, default=0, help="args.beta")
+    parser.add_argument('--cutmix_prob', type=float, default=0, help="prob of cutmix")
+    parser.add_argument('--option', type=dict, default={"load": False, "path": "./best.pth"})
+    parser.add_argument('--val_augmentation', type=str, default="ValAugmentation", help='data augmentation type for validation (default: ValAugmentation)')
+
     args = parser.parse_args()
 
     args.model = "VIT"
     args.optimizer = "Adam"
     args.pretrained = True
     args.model_name = "vit_base_patch16_224"
-    args.epochs = 250
-    args.lr_decay_step = 20
-    args.batch_size = 64
-    args.valid_batch_size = 64
-    args.lr = float(1e-6)
+    args.epochs = 200
+    args.lr_decay_step = 40
+    args.batch_size = 128
+    args.valid_batch_size = 128
+    args.lr = float(1e-5)
     args.criterion = "cross_entropy"
 
+    args.beta = 0.5
+    args.cutmix_prob = 0.5
+    args.option = {"load": False, "path": "./best.pth"}
     print(args)
 
     data_dir = args.data_dir
