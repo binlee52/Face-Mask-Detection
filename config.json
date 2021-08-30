@@ -1,0 +1,60 @@
+{
+    "name": "MaskNet",
+    "n_gpu": 1,
+    "seed": 0,
+    "name": "exp",
+    "data_dir": "/opt/ml/input/data/train/images",
+    "model_dir": "./runs",
+    "model": {
+        "type": "EfficientNet",
+        "args": {
+            "model_name": "efficientnet-b7",
+            "num_classes": 18,
+            "pretrained": true
+        }
+    },
+    "option" : {
+        "load": true,
+        "path": "./best.pt"
+    },
+    "dataset": "MaskSplitByProfileDataset",
+    "augmentation": "BaseAugmentation",
+    "batch_size": 64,
+    "valid_batch_size": 64,
+
+    "optimizer": {
+        "type": "Adam",
+        "args":{
+            "lr": 0.00001,
+            "weight_decay": 0,
+            "amsgrad": true
+        }
+    },
+
+    "criterion": "cross_entropy",
+    "lr_scheduler": {
+        "type": "StepLR",
+        "args": {
+            "step_size": 50,
+            "gamma": 0.5
+        }
+    },
+
+    "trainer": {
+        "epochs": 250,
+
+        "save_dir": "saved/",
+        "save_period": 1,
+        "verbosity": 1,
+
+        "monitor": "max f1_score",
+        "early_stop": 20,
+
+        "tensorboard": true
+    },
+
+    "val_ratio": 0.2,
+    "lr_decay_step": 50,
+    "log_interval": 20,
+
+}
