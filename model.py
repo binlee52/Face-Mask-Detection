@@ -56,7 +56,7 @@ class VIT(nn.Module):
     # vit_base_patch16_224
     def __init__(self, model_name, num_classes, pretrained=False):
         super(VIT, self).__init__()
-        self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
+        self.model = timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes, drop_path_rate=0.5)
 
     def forward(self, x):
         return self.model(x)

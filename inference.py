@@ -83,7 +83,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     args.model = "VIT"
-    args.model_dir = "./runs/exp3"
+    args.model_name = "vit_base_patch16_224-b4"
+    args.model_dir = "./runs/exp"
 
 
     data_dir = args.data_dir
