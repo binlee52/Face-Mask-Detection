@@ -243,7 +243,7 @@ def train(data_dir, model_dir, args):
 
             torch.save(model.module.state_dict(), f"{save_dir}/last.pth")
 
-            # log
+            # write log
             with open(os.path.join(save_dir, 'log.log'), 'a', encoding='utf-8') as f:
                 f.write(
                     f"Epoch {epoch}, F1_Score: {epoch_f1:.3f}, Val Loss: {val_loss:.5f}, "
