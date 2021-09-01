@@ -82,9 +82,9 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', default='vit_base_patch16_224', help="pretrained model name")
 
     args = parser.parse_args()
-    args.model = "VIT"
-    args.model_name = "vit_base_patch16_224-b4"
-    args.model_dir = "./runs/exp"
+    args.model = "EfficientNet"
+    args.model_name = "efficientnet-b4"
+    args.model_dir = "./runs/efficientnet-b4-with cutmix-f1_score0.835"
 
 
     data_dir = args.data_dir

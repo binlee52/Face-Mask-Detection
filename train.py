@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-
-from sam import SAM
+import warnings
+import sam
 
 from torch.optim.lr_scheduler import StepLR
 
@@ -28,6 +28,8 @@ import model as module
 
 from parse_config import ConfigParser
 
+# 경고메세지 끄기
+warnings.filterwarnings(action='ignore')
 
 def rand_bbox(size, lam):  # size : [Batch_size, Channel, Width, Height]
     W = size[2]
@@ -49,13 +51,13 @@ def rand_bbox(size, lam):  # size : [Batch_size, Channel, Width, Height]
     return bbx1, bby1, bbx2, bby2
 
 def seed_everything(seed):
-    torch.manual_seed(seed)
+    # torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # if use multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    np.random.seed(seed)
-    random.seed(seed)
+    # np.random.seed(seed)
+    # random.seed(seed)
 
 
 def get_lr(optimizer):
@@ -187,13 +189,25 @@ def train(data_dir, model_dir, args):
 
     # -- loss & metric
     criterion = create_criterion(args.criterion)  # default: cross_entropy
-    opt_module = getattr(import_module("torch.optim"), args.optimizer)  # default: SGD
-    optimizer = opt_module(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr,
-        weight_decay=5e-4
-    )
-    scheduler = getattr(import_module("torch.optim.lr_scheduler"), "StepLR")(optimizer, args.lr_decay_step, gamma=0.5)
+    base_optimizer = None
+    if args.optimizer == "SAM":
+        base_optimizer = getattr(import_module("torch.optim"), args.base_optimizer)
+        opt_module = getattr(import_module("sam"), args.optimizer)
+        optimizer = opt_module(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            base_optimizer=base_optimizer,
+            lr=args.lr,
+            weight_decay=5e-4
+        )
+    else:
+        opt_module = getattr(import_module("torch.optim"), args.optimizer)  # default: SGD
+        optimizer = opt_module(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=args.lr,
+            weight_decay=5e-4
+        )
+    # scheduler = getattr(import_module("torch.optim.lr_scheduler"), "StepLR")(optimizer, args.lr_decay_step, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20, eta_min=float(1e-5))
     # scheduler = StepLR(optimizer, args.lr_decay_step, gamma=0.5)
 
     # -- logging
@@ -216,38 +230,40 @@ def train(data_dir, model_dir, args):
             labels = labels.to(device)
 
             optimizer.zero_grad()
-
             r = np.random.rand(1)
-            if args.beta > 0 and r < args.cutmix_prob: # cutmix가 실행된 경우
-                lam = np.random.beta(args.beta, args.beta)
-                rand_index = torch.randperm(inputs.size()[0]).to(device)
-                target_a = labels
-                target_b = labels[rand_index]
-                bbx1, bby1, bbx2, bby2 = rand_bbox(inputs.size(), lam)
-                inputs[:, :, bbx1:bbx2, bby1:bby2] = inputs[rand_index, :, bbx1:bbx2, bby1:bby2]
-                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (inputs.size()[-1] * inputs.size()[-2]))
-                outs = model(inputs)
-                # 패치 이미지와 원본 이미지의 비율에 맞게
-                loss = criterion(outs, target_a) * lam + criterion(outs, target_b) * (1. - lam)
-            else:
-                outs = model(inputs)
-                loss = criterion(outs, labels)
 
+            def closure():
+                if args.beta > 0 and r < args.cutmix_prob: # cutmix가 실행된 경우
+                    lam = np.random.beta(args.beta, args.beta)
+                    rand_index = torch.randperm(inputs.size()[0]).to(device)
+                    target_a = labels
+                    target_b = labels[rand_index]
+                    bbx1, bby1, bbx2, bby2 = rand_bbox(inputs.size(), lam)
+                    inputs[:, :, bbx1:bbx2, bby1:bby2] = inputs[rand_index, :, bbx1:bbx2, bby1:bby2]
+                    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (inputs.size()[-1] * inputs.size()[-2]))
+                    outs = model(inputs)
+                    # 패치 이미지와 원본 이미지의 비율에 맞게
+                    loss = criterion(outs, target_a) * lam + criterion(outs, target_b) * (1. - lam)
+                else:
+                    outs = model(inputs)
+                    loss = criterion(outs, labels)
+                return loss
+
+            loss = closure()
             loss.backward()
-            optimizer.step()
+
+            if isinstance(optimizer, sam.SAM):
+                optimizer.first_step(zero_grad=True)
+                loss = closure()
+                loss.backward()
+                optimizer.second_step(zero_grad=True)
+            else:
+                optimizer.step()
             train_loss += loss.item()
-
-
-            # outs = model(inputs)
-            # preds = torch.argmax(outs, dim=-1)
-            # loss = criterion(outs, labels)
-            # loss.backward()
-            # optimizer.step()
-            #
-            # train_loss += loss.item()
 
         train_loss = train_loss / len(train_loader)
 
+        logger.add_scalar("lr", scheduler.get_last_lr()[0], epoch)
         scheduler.step()
 
         # val loop
@@ -359,23 +375,26 @@ if __name__ == '__main__':
     parser.add_argument('--cutmix_prob', type=float, default=0, help="prob of cutmix")
     parser.add_argument('--option', type=dict, default={"load": False, "path": "./best.pth"})
     parser.add_argument('--val_augmentation', type=str, default="ValAugmentation", help='data augmentation type for validation (default: ValAugmentation)')
+    parser.add_argument('--base_optimizer', default="None", help="base optimizer when optimizer is SAM")
 
     args = parser.parse_args()
 
-    args.model = "VIT"
-    args.optimizer = "Adam"
+    args.model = "EfficientNet"
+    args.data_dir = "/opt/ml/input/data/train/images"
+    args.optimizer = "SAM"
     args.pretrained = True
-    args.model_name = "vit_base_patch16_224"
-    args.epochs = 200
-    args.lr_decay_step = 40
+    args.model_name = "efficientnet-b4"
+    args.epochs = 250
     args.batch_size = 128
     args.valid_batch_size = 128
-    args.lr = float(1e-5)
+    args.lr = float(1e-3)
     args.criterion = "cross_entropy"
 
-    args.beta = 0.5
+    args.beta = 1.0
     args.cutmix_prob = 0.5
-    args.option = {"load": False, "path": "./best.pth"}
+
+    args.option = {"load": False, "path": "./runs/exp/best.pth"}
+    args.base_optimizer = "SGD"
     print(args)
 
     data_dir = args.data_dir

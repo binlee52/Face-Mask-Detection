@@ -28,7 +28,6 @@ def is_image_file(filename):
 class BaseAugmentation:
     def __init__(self, mean, std, **args):
         self.transform = A.Compose([
-            A.CenterCrop(400, 300),
             A.Resize(224, 224),
             A.HorizontalFlip(), # Same with transforms.RandomHorizontalFilp()
             A.Normalize(mean=mean, std=std),
@@ -117,7 +116,8 @@ class AgeLabels(int, Enum):
 
         if value < 30:
             return cls.YOUNG
-        elif value < 60:
+        # 60
+        elif value < 58:
             return cls.MIDDLE
         else:
             return cls.OLD
@@ -133,13 +133,20 @@ class MaskBaseDataset(Dataset):
         "mask4": MaskLabels.MASK,
         "mask5": MaskLabels.MASK,
         "incorrect_mask": MaskLabels.INCORRECT,
-        "normal": MaskLabels.NORMAL
+        "normal": MaskLabels.NORMAL,
+        "incorrect1": MaskLabels.INCORRECT,
+        "incorrect2": MaskLabels.INCORRECT,
+        "incorrect3": MaskLabels.INCORRECT,
     }
 
     image_paths = []
     mask_labels = []
     gender_labels = []
     age_labels = []
+    
+    all_labels = [] # 추가
+    indexs = [] # 추가
+    groups = [] # 추가
 
     def __init__(self, data_dir, mean=(0.548, 0.504, 0.479), std=(0.237, 0.247, 0.246), val_ratio=0.2):
         self.data_dir = data_dir
@@ -152,6 +159,7 @@ class MaskBaseDataset(Dataset):
         self.calc_statistics()
 
     def setup(self):
+        cnt = 0 # 추가
         profiles = os.listdir(self.data_dir)
         for profile in profiles:
             if profile.startswith("."):  # "." 로 시작하는 파일은 무시합니다
@@ -175,6 +183,11 @@ class MaskBaseDataset(Dataset):
                 self.gender_labels.append(gender_label)
                 self.age_labels.append(age_label)
 
+                self.all_labels.append(self.encode_multi_class(mask_label, gender_label, age_label)) # 추가
+                self.indexs.append(cnt) # 추가
+                self.groups.append(id) # 추가
+                cnt += 1 # 추가
+
     def calc_statistics(self):
         has_statistics = self.mean is not None and self.std is not None
         if not has_statistics:
@@ -183,6 +196,7 @@ class MaskBaseDataset(Dataset):
             squared = []
             for image_path in self.image_paths[:3000]:
                 image = cv2.imread(image_path).astype(np.int32)
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 sums.append(image.mean(axis=(0, 1)))
                 squared.append((image ** 2).mean(axis=(0, 1)))
 
@@ -218,7 +232,9 @@ class MaskBaseDataset(Dataset):
 
     def read_image(self, index):
         image_path = self.image_paths[index]
-        return cv2.imread(image_path)
+        image = cv2.imread(image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return image
 
     @staticmethod
     def encode_multi_class(mask_label, gender_label, age_label) -> int:
@@ -337,7 +353,7 @@ class TestDataset(Dataset):
 
     def __getitem__(self, index):
         image = cv2.imread(self.img_paths[index])
-
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         if self.transform:
             image = self.transform(image=image)['image']
         return image

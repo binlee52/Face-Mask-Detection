@@ -60,3 +60,10 @@ class SAM(torch.optim.Optimizer):
     def load_state_dict(self, state_dict):
         super().load_state_dict(state_dict)
         self.base_optimizer.param_groups = self.param_groups
+
+
+if __name__ == "__main__":
+    model = torch.nn.Linear(12, 12)
+    base_optimizer = torch.optim.SGD
+    sam = SAM(model.parameters(), base_optimizer, lr=0.1, momentum=0.9)
+    print(isinstance(sam, SAM))
